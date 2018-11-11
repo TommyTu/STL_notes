@@ -98,26 +98,58 @@ class allocator {
     typedef size_t size_type;
     typedef ptrdiff_tdifference_type;
     // rebind allocator of type U
-    template <class U>
-   struct rebind {
+	template <class U>
+    struct rebind {
 		typedef allocator<U> other;
 	};
 // hint used for locality. ref.[Austern],p189
-pointerallocate(size_type n, const void* hint=0) {
-	return _allocate((difference_type)n, (pointer)0);
-}
-void deallocate(pointer p, size_type n) { _deallocate(p); }
-void construct(pointer p, const T& value) {
-	_construct(p, value);
-}
-void destroy(pointer p) {_destroy(p); }
-pointeraddress(reference x) { return (pointer)&x; }
-const_pointerconst_address(const_reference x) {
-	return (const_pointer)&x;
-}
-size_typemax_size() const {
-return size_type(UINT_MAX/sizeof(T));
-}
+    pointerallocate(size_type n, const void* hint=0) {
+        return _allocate((difference_type)n, (pointer)0);
+    }
+    void deallocate(pointer p, size_type n) { _deallocate(p); }
+    void construct(pointer p, const T& value) {
+        _construct(p, value);
+    }
+    void destroy(pointer p) {_destroy(p); }
+    pointeraddress(reference x) { return (pointer)&x; }
+    const_pointerconst_address(const_reference x) {
+        return (const_pointer)&x;
+    }
+    size_typemax_size() const {
+    return size_type(UINT_MAX/sizeof(T));
+    }
 };
 ```
+
+然而，SGI STL与标准规范不同，其名称为alloc而不是allocator，也就是说如果你想在程序中采用SGI STL的allocator你需要这么写：`` vector<int,std::alloc> iv;``
+在这点上，我们不必为这种不一致而困扰，因为通常我们采用default的allocator，而SGI STL的每一个container都制定了其default的allocator为alloc。
+
+### SGI STL alloc
+
+其实，SGI STL标准为我们已经提供了一个符合STL标准的allocator，但是这个allocator只是对`new delete`自做了一个简单的封装而不常用。
+
+在SGI STL内部，有一个更robust的allocator实现，它完全摒弃了STL allocator的标准，下面我们来看它的实现。
+
+```cpp
+class Foo{}
+Foo* p = new Foo();
+delete p;
+```
+
+我们观察上面简单的C++一段很常用的逻辑，在这段逻辑中，new的行为有两个:
+
+1. 调用`::operator new`分配内存.
+2. 调用default Constuctor of Foo.
+
+同理，delete也分为两步：
+
+1. 调用`~Foo()`进行析构。
+2. `::operator delete`释放内存。
+
+不难发现上述的功能也可以分为两大块，一是对内存的管理，二是对对象的管理。这两个功能分别对应`#include<stl_construct.h>`的`construct() destroy()`和`#include<stl_alloc.h>`的`alloc`.
+
+| `stl_construct.h`     | 定义construct和destroy，负责对象的建构和析构，隶属于STL      |
+| --------------------- | ------------------------------------------------------------ |
+| `stl_alloc.h`         | 定义一二级配置器，彼此合作，配置器名为alloc                  |
+| `stl_uninitialized.h` | 定义一些全全局函数表达式，用来填充复制大块内存区间。`un_initialized_copy()` `un_initialized_fill()` `un_initialized_filln()` |
 
