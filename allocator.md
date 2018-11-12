@@ -153,3 +153,182 @@ delete p;
 | `stl_alloc.h`         | 定义一二级配置器，彼此合作，配置器名为alloc                  |
 | `stl_uninitialized.h` | 定义一些全全局函数表达式，用来填充复制大块内存区间。`un_initialized_copy()` `un_initialized_fill()` `un_initialized_filln()` |
 
+#### 建构 解构 construct destroy
+
+下面即是`stl_construct.h`的部分内容
+
+```cpp
+#include <new.h>
+
+template<class T1, class T2>
+inline void construct(T1* p, const T2& val) {
+	new (p) T1(val); // call T1::T1(val)
+}
+
+//destroy 的第一个版本
+template<calss T> 
+inline void destroy(T* pointer) {
+    pointer->T(); // call destructor;
+}
+
+//第二版本destroy() 需要用type_trait找到数据类型
+template<class ForwardIterator>
+inline void destroy(ForwardIterator first, ForwardIterator last) {
+	__destroy(first, last, value_type(first));
+}
+
+
+template<class ForwardIterator, class T>
+inline void __destroy(ForwardIterator first, ForwardIterator last, T* val) {
+	typedef typename __type__traits<T>::has_trivial_destructor trivial_destructor;
+    //通过type_traitor判断这个T有没有trivial destructor
+    //trivial destructor便代表是不是这个有没有explicit destructor
+    __destroy_aux(first, last, trivial_destructor());
+}
+//如果有non-trivial destrutor
+template<class ForwardIterator>
+inline void __destroy_aux(ForwardIterator first, ForwardIterator last, __false_type) {
+	for(;first < last; first++)
+		destroy(&*first);
+}
+
+//如果没有virtual destrutor
+template<class ForwardIterator>
+inline void __destroy_aux(ForwardIterator first, ForwardIterator last, __true_type) {
+
+}
+
+inline void destroy(char*, char*) ()
+inline void destroy(wchar_t*, wchar_t*) ()   
+
+
+```
+
+上述的代码逻辑，分为两部分，对于`construct`来说，便是把一个value放在一个pointer伤的，我们运用了C++中的placement new operator来做这个行为。
+
+同时，对于`destroy`来说，逻辑会更复杂一些：
+
+- 对于一个指针类型，特化模版直接调用析构函数。
+- 对于iterator类型，根据value_type是否有trivial destructor再特化成两种模式
+- 对于char*类型，重新特化
+
+Note: Placement new allows you to construct an object on memory that's already allocated. It's useful if you want to separate allocation from initialization. 
+
+#### 空间配置与释放
+
+对象建构前和析构后的空间由`stl_alloc.h`负责，为了设计一个好的空间管理器，我们需要如下信条：
+
+- 向system的heap请求内存
+- 考虑multi-threading的情况
+- 考虑内存不足的情况
+- 考虑过多小区块造成的framentation问题
+
+为了解决最后一个内存fragmentation问题，SGI设计了双层配置器，第一级直接使用`malloc`和`free`,第二层则根据配置区块大小采用不同措施: 如果区块大于128bytes直接使用第一级配置器，否则便使用memory_pool来管理这些过小的区块，如下为代码，用use_malloc这个宏变量定义一级还是二级，而对于alloc而言，本身无任何模版参数。
+
+```cpp
+#ifdef _USE_MALLOC
+typedef _malloc_alloc_template<0> malloc_alloc;
+typefef malloc_alloc alloc; //alloc为一级适配器
+#else
+//alloc为二级适配器
+typedef _default_alloc_template<__NODE_ALLOCATOR_THREADS, 0> alloc;
+#endif
+
+```
+
+而为了使得SGI提供的allocator能符合stl标准，SGI会为alloc，无论是一级还是二级，定义多一个接口，其作用只相当于一个转接口，调用真正的Alloc，以模版参数T的类型（注意alloc本身是不接受模版参数的）。
+
+```cpp
+template<class T, class Alloc>
+class simple_alloc {
+	public:
+    static T *allocate(size_t n) {
+    	return 0 == n ? 0 : (T*) Alooc::allocate(n*sizeof(T));
+    }
+    static T *allocate(void) {
+    	return (T*) Alooc::allocate(sizeof(T));
+    }  
+    static T *deallocate(T* p, size_t n) {
+    	if(0 != n) 
+    		(Alloc::deallocate(p, n*sizeof(T));
+    } 
+    static T *deallocate(T* p) {
+    	Alloc::deallocate(sizeof(T);
+    } 
+}
+```
+
+### 一二级配置器详解
+
+一级配置器:
+
+```cpp
+template<int inst>
+class __malloc_alloc_template {
+
+};
+/*
+其中 
+1. allocate()直接使用malloc(), dealloc()直接使用free()
+2. 模拟C++的set_new_handler()以处理内存不足的情况
+*/
+
+```
+
+二级配置器：
+
+```cpp
+template<bool threads, int inst>
+class __default_alloc_template {
+};
+/*
+其中 
+1. 维护16个free lists, 负责小型区块的次配置能力
+   memory pool 以malloc配置而得,如果内存不足,转呼叫一级配置器
+2. 如果需求大于128bytes同样转而呼叫一级
+*/
+
+```
+
+#### 一级配置器
+
+```cpp
+# if 0
+#include <new>
+#define _THROW_BAD_ALLOC throw bad_alloc
+#elif !define(__THROW_BAD_ALLOC)
+#include <isotream.h>
+#define _THROW_BAD_ALLOC cerr << "out of mem" << endl; exit(1);
+#endif
+
+template<int inst>
+class __malloc_alloc_template {
+	private:
+	static void *oom_malloc(size_t);
+	static void *oom_realloc(void*, size_t);
+	static void (*__malloc_alloc_oom_handler) ();
+	public:
+	//直接使用malloc如果空间不够的话，使用oom
+    static void* allocate(size_t n) {
+    	void* result = malloc(n);
+    	if(0 == result)
+    		result = oom_malloc(n);
+    	return result;
+    }
+    static void deallocate(void* p, size_t /*n*/) {
+    	free(p);
+    }
+    static void* reallocate(void* p, size_t, size_t new_sz) {
+    	void* result = realloc(p, new_sz);
+    	if(0 == result)
+    		result = oom_realloc(p, new_sz);
+    	return result;    
+    }
+    static void (* set_malloc_handler(void(*f)())) () {
+    	void (*old) () = __malloc_alloc_oom_handler;
+    	_malloc_alloc_oom_handler = f;
+    	return old;
+    }
+};
+```
+
